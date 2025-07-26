@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Polyomino Solver</title>
+    <link rel="stylesheet" href="solver.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Advanced Polyomino Solver</h1>
+            <p>Complex constraint-based polyomino fitting with special cells and labels</p>
+        </div>
+        
+        <div class="main-content">
+            <div class="panel">
+                <h2>Target Region (9×7 = 63 cells)</h2>
+                
+                <div class="grid-container">
+                    <div id="targetGrid" class="grid"></div>
+                    <div class="special-positions">
+                        Special cells (orange borders): (0,0), (0,8), (1,6), (2,3), (2,5), (5,2)
+                    </div>
+                </div>
+
+                <div class="algorithm-selector">
+                    <label>Solving Algorithm:</label>
+                    <select id="algorithmSelect">
+                        <option value="exhaustive">Exhaustive Search (Complete)</option>
+                        <option value="backtracking">Backtracking with Pruning</option>
+                        <option value="constraint">Advanced Constraint Satisfaction</option>
+                    </select>
+                </div>
+
+                <div class="checkbox-container">
+                    <input type="checkbox" id="allowRotations" class="checkbox" checked>
+                    <label for="allowRotations">Allow rotations</label>
+                </div>
+                
+                <div class="checkbox-container">
+                    <input type="checkbox" id="allowReflections" class="checkbox">
+                    <label for="allowReflections">Allow reflections</label>
+                </div>
+
+                <div class="controls">
+                    <button class="btn btn-success" onclick="solvePuzzle()">
+                        <span id="solveText">Solve Puzzle</span>
+                    </button>
+                    <button class="btn btn-secondary" onclick="clearSolution()">Clear Solution</button>
+                </div>
+
+                <div id="status" class="status" style="display: none;"></div>
+                
+                <div class="solution-info">
+                    <strong>Solutions found: <span id="solutionCount">0</span></strong>
+                    <div id="solutionDetails" style="margin-top: 10px;"></div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Piece Designer</h2>
+                
+                <div class="piece-editor">
+                    <div id="pieceGrid" class="piece-grid"></div>
+                    <div class="controls">
+                        <button class="btn btn-success" onclick="addCurrentPiece()">Add Piece</button>
+                        <button class="btn btn-secondary" onclick="clearPieceEditor()">Clear Editor</button>
+                    </div>
+                </div>
+
+                <h3>Current Pieces:</h3>
+                <div id="pieceList" class="piece-list"></div>
+                <div class="controls">
+                    <button class="btn btn-danger" onclick="removeSelectedPiece()">Remove Selected</button>
+                    <button class="btn btn-secondary" onclick="clearAllPieces()">Clear All</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="solver.js"></script>
+</body>
+</html>
