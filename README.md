@@ -1,0 +1,2 @@
+説明不要
+ライセンスはRacingMaster_ParkingEventに同じ。
