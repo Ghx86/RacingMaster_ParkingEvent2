@@ -10,6 +10,10 @@ let solution = null;
 let solutionCount = 0;
 let currentPieceColor = 0;
 
+// Performance constants
+const MAX_NODES = 200000000; // 2000万ノードの制限
+const MAX_SOLVE_TIME = 120000; // 秒の制限
+
 // Special cell positions (0-indexed) - [x,y] format where x=column, y=row
 const specialCells = [[0,0], [8,0], [6,1], [3,2], [5,2], [2,5]];
 
@@ -330,6 +334,28 @@ function generatePieceVariants(shape) {
     return Array.from(variants).map(v => JSON.parse(v));
 }
 
+// 計算複雑度を推定する関数
+function estimateComplexity() {
+    let totalNodes = 1;
+    let totalInstances = 0;
+    
+    // 各ピースのインスタンス数と変形数を計算
+    pieces.forEach(piece => {
+        const variants = generatePieceVariants(piece.shape);
+        totalInstances += piece.count;
+        
+        // 各インスタンスについて可能な配置数を概算
+        const possiblePositions = gridWidth * gridHeight; // 粗い概算
+        totalNodes *= Math.pow(variants.length * possiblePositions, piece.count);
+    });
+    
+    return {
+        estimatedNodes: totalNodes,
+        totalInstances: totalInstances,
+        totalPieces: pieces.length
+    };
+}
+
 // Constraint checking functions
 function isPieceAdjacent(grid, pieceId1, pieceId2) {
     const positions1 = [];
@@ -392,10 +418,12 @@ function placePiece(grid, piece, startX, startY, pieceId) {
     return newGrid;
 }
 
-// Exhaustive search solver
+// 制限付き Exhaustive search solver
 function solveExhaustive() {
     const solutions = [];
-    const maxSolutions = 100; // Limit for performance
+    const maxSolutions = 100;
+    let nodeCount = 0;
+    const startTime = Date.now();
     
     // Generate all piece instances with their constraints
     const pieceInstances = [];
@@ -416,15 +444,20 @@ function solveExhaustive() {
             });
         }
     });
+    
+    // Bラベルピースを後回しにする最適化
+    pieceInstances.sort((a, b) => {
+        if (a.label === 'B' && b.label !== 'B') return 1;
+        if (a.label !== 'B' && b.label === 'B') return -1;
+        return 0;
+    });
 
     function validateSolution(grid, assignments) {
-        // Track which special cells are used by C-labeled pieces
-        const specialCellsUsed = new Map(); // specialCellKey -> pieceIndex
+        const specialCellsUsed = new Map();
         
         for (const assignment of assignments) {
             const instance = pieceInstances[assignment.instanceIndex];
             
-            // Check B constraint: must be adjacent to target piece type
             if (instance.label === 'B' && instance.bTarget !== null) {
                 let foundAdjacent = false;
                 
@@ -443,7 +476,6 @@ function solveExhaustive() {
                 }
             }
             
-            // Check C constraint: must contain special cell, no sharing within same piece type
             if (instance.label === 'C') {
                 let foundSpecialCell = false;
                 
@@ -453,10 +485,9 @@ function solveExhaustive() {
                     const specialKey = `${x},${y}`;
                     
                     if (specialCells.some(([sx, sy]) => sx === x && sy === y)) {
-                        // Check if this special cell is already used by same piece type
                         if (specialCellsUsed.has(specialKey) && 
                             specialCellsUsed.get(specialKey) === instance.pieceIndex) {
-                            return false; // Same piece type using same special cell
+                            return false;
                         }
                         
                         specialCellsUsed.set(specialKey, instance.pieceIndex);
@@ -474,6 +505,20 @@ function solveExhaustive() {
     }
 
     function exhaustiveSearch(grid, assignments, instanceIndex) {
+        nodeCount++;
+        
+        // ノード数制限チェック（より頻繁にチェック）
+        if (nodeCount % 1000 === 0) {
+            if (nodeCount > MAX_NODES) {
+                return false;
+            }
+            
+            // 時間制限チェック
+            if (Date.now() - startTime > MAX_SOLVE_TIME) {
+                return false;
+            }
+        }
+        
         if (instanceIndex >= pieceInstances.length) {
             if (validateSolution(grid, assignments)) {
                 solutions.push({
@@ -517,14 +562,19 @@ function solveExhaustive() {
     const grid = Array(gridHeight).fill().map(() => Array(gridWidth).fill(null));
     exhaustiveSearch(grid, [], 0);
     
-    return solutions;
+    return {
+        solutions: solutions,
+        nodeCount: nodeCount,
+        limitReached: nodeCount > MAX_NODES || (Date.now() - startTime > MAX_SOLVE_TIME)
+    };
 }
 
-// Backtracking solver with constraint checking
+// 制限付き Backtracking solver
 function solveBacktracking() {
     let solutionFound = null;
+    let nodeCount = 0;
+    const startTime = Date.now();
     
-    // Generate all piece instances
     const pieceInstances = [];
     let instanceId = 0;
     
@@ -547,10 +597,65 @@ function solveBacktracking() {
     function isValidPlacement(grid, assignments, newAssignment) {
         const instance = pieceInstances[newAssignment.instanceIndex];
         
-        // Early constraint checking for C labels
+        // C制約の早期チェック
         if (instance.label === 'C') {
             if (!pieceContainsSpecialCell(newAssignment.variant, newAssignment.x, newAssignment.y)) {
                 return false;
+            }
+        }
+        
+        // B制約の早期チェック - 配置完了時点で隣接ピースが存在するかチェック
+        if (instance.label === 'B' && instance.bTarget !== null) {
+            // 現在の配置で、ターゲットピースタイプが隣接しているかチェック
+            let foundAdjacentTarget = false;
+            
+            // 新しい配置の各セルについて
+            for (const [dx, dy] of newAssignment.variant) {
+                const x = newAssignment.x + dx;
+                const y = newAssignment.y + dy;
+                
+                // 隣接する4方向をチェック
+                const neighbors = [[x-1,y], [x+1,y], [x,y-1], [x,y+1]];
+                for (const [nx, ny] of neighbors) {
+                    if (nx >= 0 && nx < gridWidth && ny >= 0 && ny < gridHeight) {
+                        const neighborInstanceId = grid[ny][nx];
+                        if (neighborInstanceId !== null) {
+                            // この隣接セルのピースタイプを確認
+                            const neighborInstance = pieceInstances[neighborInstanceId];
+                            if (neighborInstance && neighborInstance.pieceIndex === instance.bTarget) {
+                                foundAdjacentTarget = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (foundAdjacentTarget) break;
+            }
+            
+            // まだターゲットピースが配置されていない場合は、将来配置される可能性があるかチェック
+            if (!foundAdjacentTarget) {
+                // 残りのピースインスタンスにターゲットタイプがあるかチェック
+                let hasRemainingTarget = false;
+                for (let i = newAssignment.instanceIndex + 1; i < pieceInstances.length; i++) {
+                    if (pieceInstances[i].pieceIndex === instance.bTarget) {
+                        hasRemainingTarget = true;
+                        break;
+                    }
+                }
+                
+                // 既に配置済みのターゲットピースがあるかチェック
+                let hasPlacedTarget = false;
+                for (const assignment of assignments) {
+                    if (pieceInstances[assignment.instanceIndex].pieceIndex === instance.bTarget) {
+                        hasPlacedTarget = true;
+                        break;
+                    }
+                }
+                
+                // ターゲットピースが既に全て配置済みで隣接していない場合は無効
+                if (!hasRemainingTarget && hasPlacedTarget && !foundAdjacentTarget) {
+                    return false;
+                }
             }
         }
         
@@ -558,12 +663,56 @@ function solveBacktracking() {
     }
 
     function validateCurrentState(grid, assignments) {
-        // Quick validation during search
         const specialCellsUsed = new Map();
         
         for (const assignment of assignments) {
             const instance = pieceInstances[assignment.instanceIndex];
             
+            // B制約の部分チェック - 既に配置された同じBインスタンスについて
+            if (instance.label === 'B' && instance.bTarget !== null) {
+                let foundAdjacent = false;
+                
+                // 現在のBピースの隣接をチェック
+                for (const [dx, dy] of assignment.variant) {
+                    const x = assignment.x + dx;
+                    const y = assignment.y + dy;
+                    
+                    const neighbors = [[x-1,y], [x+1,y], [x,y-1], [x,y+1]];
+                    for (const [nx, ny] of neighbors) {
+                        if (nx >= 0 && nx < gridWidth && ny >= 0 && ny < gridHeight) {
+                            const neighborInstanceId = grid[ny][nx];
+                            if (neighborInstanceId !== null) {
+                                const neighborInstance = pieceInstances[neighborInstanceId];
+                                if (neighborInstance && neighborInstance.pieceIndex === instance.bTarget) {
+                                    foundAdjacent = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if (foundAdjacent) break;
+                }
+                
+                // まだターゲットが見つからない場合、残りピースでカバー可能かチェック
+                if (!foundAdjacent) {
+                    let hasRemainingTarget = false;
+                    for (let i = 0; i < pieceInstances.length; i++) {
+                        const pi = pieceInstances[i];
+                        if (pi.pieceIndex === instance.bTarget && 
+                            !assignments.some(a => a.instanceIndex === i)) {
+                            hasRemainingTarget = true;
+                            break;
+                        }
+                    }
+                    
+                    // ターゲットピースが残っていない場合は無効
+                    if (!hasRemainingTarget) {
+                        return false;
+                    }
+                }
+            }
+            
+            // C制約チェック
             if (instance.label === 'C') {
                 for (const [dx, dy] of assignment.variant) {
                     const x = assignment.x + dx;
@@ -585,8 +734,19 @@ function solveBacktracking() {
     }
 
     function backtrack(grid, assignments, instanceIndex) {
+        nodeCount++;
+        
+        // ノード数制限チェック
+        if (nodeCount > MAX_NODES) {
+            return false;
+        }
+        
+        // 時間制限チェック
+        if (Date.now() - startTime > MAX_SOLVE_TIME) {
+            return false;
+        }
+        
         if (instanceIndex >= pieceInstances.length) {
-            // Final validation
             if (validateFinalSolution(grid, assignments)) {
                 solutionFound = {
                     grid: grid.map(row => [...row]),
@@ -634,7 +794,6 @@ function solveBacktracking() {
         for (const assignment of assignments) {
             const instance = pieceInstances[assignment.instanceIndex];
             
-            // Check B constraint
             if (instance.label === 'B' && instance.bTarget !== null) {
                 let foundAdjacent = false;
                 
@@ -653,7 +812,6 @@ function solveBacktracking() {
                 }
             }
             
-            // Check C constraint
             if (instance.label === 'C') {
                 let foundSpecialCell = false;
                 
@@ -685,13 +843,15 @@ function solveBacktracking() {
     const grid = Array(gridHeight).fill().map(() => Array(gridWidth).fill(null));
     backtrack(grid, [], 0);
     
-    return solutionFound ? [solutionFound] : [];
+    return {
+        solutions: solutionFound ? [solutionFound] : [],
+        nodeCount: nodeCount,
+        limitReached: nodeCount > MAX_NODES || (Date.now() - startTime > MAX_SOLVE_TIME)
+    };
 }
 
 // Constraint satisfaction solver
 function solveConstraintSatisfaction() {
-    // This would use more advanced CSP techniques
-    // For now, fall back to backtracking
     return solveBacktracking();
 }
 
@@ -700,6 +860,16 @@ async function solvePuzzle() {
     if (pieces.length === 0) {
         showStatus('Please add some pieces first!', 'error');
         return;
+    }
+
+    // 複雑度の事前チェック
+    const complexity = estimateComplexity();
+    
+    if (complexity.estimatedNodes > MAX_NODES * 1000) { // より大きな閾値で事前警告
+        const message = `問題が非常に複雑です（推定ノード数: ${complexity.estimatedNodes.toExponential(2)}）。計算に非常に長い時間がかかる可能性があります。`;
+        if (!confirm(message + ' 続行しますか？')) {
+            return;
+        }
     }
 
     // Validate B label constraints
@@ -716,7 +886,6 @@ async function solvePuzzle() {
     
     showStatus('Solving puzzle with constraints...', 'solving');
     
-    // Small delay to allow UI update
     await new Promise(resolve => setTimeout(resolve, 100));
 
     try {
@@ -742,25 +911,59 @@ async function solvePuzzle() {
         const endTime = performance.now();
         const solveTime = ((endTime - startTime) / 1000).toFixed(2);
 
-        solutionCount = results.length;
+        solutionCount = results.solutions.length;
         document.getElementById('solutionCount').textContent = solutionCount;
         
         if (solutionCount > 0) {
-            solution = results[0]; // Display first solution
-            displaySolution(results[0]);
-            showStatus(`Found ${solutionCount} solution${solutionCount > 1 ? 's' : ''} in ${solveTime}s`, 'success');
+            solution = results.solutions[0];
+            displaySolution(results.solutions[0]);
             
-            document.getElementById('solutionDetails').innerHTML = `
+            let statusMessage = `Found ${solutionCount} solution${solutionCount > 1 ? 's' : ''} in ${solveTime}s`;
+            if (results.limitReached) {
+                statusMessage += ' (計算制限により中断)';
+            }
+            showStatus(statusMessage, 'success');
+            
+            let detailsHtml = `
                 <div>Search time: ${solveTime} seconds</div>
                 <div>Algorithm: ${algorithm}</div>
-                ${solutionCount > 1 ? '<div>Showing first solution</div>' : ''}
+                <div>Nodes explored: ${results.nodeCount.toLocaleString()}</div>
             `;
+            
+            if (results.limitReached) {
+                detailsHtml += `<div style="color: #e74c3c; font-weight: bold;">※ 計算制限（${(MAX_NODES/1000).toFixed(0)}K nodes または30秒）により探索を中断しました</div>`;
+                if (solutionCount === 0) {
+                    detailsHtml += `<div style="color: #f39c12;">実際にはさらに多くの解が存在する可能性があります</div>`;
+                } else {
+                    detailsHtml += `<div style="color: #f39c12;">実際にはさらに多くの解が存在する可能性があります（${solutionCount}+ solutions）</div>`;
+                }
+            } else if (solutionCount > 1) {
+                detailsHtml += '<div>Showing first solution</div>';
+            }
+            
+            document.getElementById('solutionDetails').innerHTML = detailsHtml;
         } else {
-            showStatus(`No solution exists. Search completed in ${solveTime}s`, 'error');
-            document.getElementById('solutionDetails').innerHTML = `
+            let statusMessage = `No solution found in ${solveTime}s`;
+            if (results.limitReached) {
+                statusMessage = `計算制限により探索を中断 (${solveTime}s)`;
+            } else {
+                statusMessage = `No solution exists. Search completed in ${solveTime}s`;
+            }
+            
+            showStatus(statusMessage, results.limitReached ? 'solving' : 'error');
+            
+            let detailsHtml = `
                 <div>Search time: ${solveTime} seconds</div>
                 <div>Algorithm: ${algorithm}</div>
+                <div>Nodes explored: ${results.nodeCount.toLocaleString()}</div>
             `;
+            
+            if (results.limitReached) {
+                detailsHtml += `<div style="color: #e74c3c; font-weight: bold;">※ 計算制限（${(MAX_NODES/1000).toFixed(0)}K nodes または30秒）により探索を中断</div>`;
+                detailsHtml += `<div style="color: #f39c12;">解が存在する可能性がありますが、より多くの計算時間が必要です</div>`;
+            }
+            
+            document.getElementById('solutionDetails').innerHTML = detailsHtml;
         }
     } catch (error) {
         console.error('Solving error:', error);
